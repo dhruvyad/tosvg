@@ -49,6 +49,14 @@ export function tracePixel(src: ImageData, opts: PixelOptions): string {
     }
   }
 
+  // Mode filter (cell + 4 cardinal neighbors). Kills isolated artifacts
+  // and straightens color boundaries that wobble by 1 block due to
+  // sub-block anti-aliasing in the source. Only flips a cell when
+  // 3+ of its 5-cell cross share a different color — preserves thin
+  // 1-block lines (a horizontal line cell has 2 same-color horizontal
+  // neighbors so it sticks).
+  modeFilter(indexed, cols, rows, palette.length);
+
   // Per color, run largest-rectangle-first decomposition, then split rects
   // into "thick" (filled) and "thin" (stroked) groups. A 1-block-thick
   // rectangle rendered as a stroke of width=block centered on its midline
@@ -165,6 +173,34 @@ function collectRuns(
   if (run > 0) out.push(run);
 }
 
+function modeFilter(
+  indexed: Uint8Array,
+  cols: number,
+  rows: number,
+  paletteSize: number,
+): void {
+  // Conservative isolated-cell filter: only flip a cell when all 4
+  // cardinal neighbors agree on the same color different from self.
+  // Kills 1-cell anti-alias artifacts at color boundaries while
+  // preserving every linear feature (any cell with a same-color
+  // horizontal OR vertical neighbor stays put).
+  const tmp = new Uint8Array(indexed);
+  for (let y = 1; y < rows - 1; y++) {
+    const off = y * cols;
+    for (let x = 1; x < cols - 1; x++) {
+      const me = indexed[off + x];
+      const up = indexed[off - cols + x];
+      const down = indexed[off + cols + x];
+      const left = indexed[off + x - 1];
+      const right = indexed[off + x + 1];
+      if (up === down && up === left && up === right && up !== me) {
+        tmp[off + x] = up;
+      }
+    }
+  }
+  for (let i = 0; i < indexed.length; i++) indexed[i] = tmp[i];
+}
+
 function buildPaletteFromImage(src: ImageData, target: number): number[] {
   // K-means in RGB. Bucket popularity alone produces "transition" shades —
   // dark grays sitting between a yellow and the black background — that
@@ -241,16 +277,45 @@ function buildPaletteFromImage(src: ImageData, target: number): number[] {
     if (moved < 1) break;
   }
 
-  // Drop any cluster that ended up empty.
-  const palette: number[] = [];
+  // Collect non-empty clusters with their counts.
+  const clusters: { color: number; count: number; r: number; g: number; b: number }[] = [];
   for (let i = 0; i < target; i++) {
     if (cnt[i] === 0) continue;
     const r = Math.round(cR[i]);
     const g = Math.round(cG[i]);
     const bb = Math.round(cB[i]);
-    palette.push((r << 16) | (g << 8) | bb);
+    clusters.push({ color: (r << 16) | (g << 8) | bb, count: cnt[i], r, g, b: bb });
   }
-  return palette;
+
+  // Merge near-duplicate clusters (e.g. two brown variants only ~5 RGB
+  // units apart, both produced by k-means converging on similar centers).
+  // Without this, the smaller variant gets assigned to anti-aliased
+  // boundary cells and renders as a faint ghost line. Threshold tuned by
+  // eye on representative images.
+  const mergeThreshold = 15;
+  const merged: typeof clusters = [];
+  clusters.sort((a, b) => b.count - a.count);
+  for (const c of clusters) {
+    let absorbed = false;
+    for (const m of merged) {
+      const dr = m.r - c.r, dg = m.g - c.g, db = m.b - c.b;
+      const d = Math.sqrt(dr * dr + dg * dg + db * db);
+      if (d < mergeThreshold) {
+        // Weighted-average merge into the larger cluster.
+        const total = m.count + c.count;
+        m.r = Math.round((m.r * m.count + c.r * c.count) / total);
+        m.g = Math.round((m.g * m.count + c.g * c.count) / total);
+        m.b = Math.round((m.b * m.count + c.b * c.count) / total);
+        m.color = (m.r << 16) | (m.g << 8) | m.b;
+        m.count = total;
+        absorbed = true;
+        break;
+      }
+    }
+    if (!absorbed) merged.push(c);
+  }
+
+  return merged.map((m) => m.color);
 }
 
 function nearestIndex(color: number, palette: number[]): number {

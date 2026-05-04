@@ -35,7 +35,7 @@ console.log(
 console.log('=== Pixel mode ===');
 console.log('colors\tblock\topt KB\tfile');
 const blocks = [4, 8, 12, 14, 16, 20, 24, 32];
-const colorChoices = [3, 4, 6, 8];
+const colorChoices = [3, 4, 5, 6, 8];
 for (const colors of colorChoices) {
   for (const blockSize of blocks) {
     const svg = tracePixel(imageData, { colors, blockSize });

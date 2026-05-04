@@ -32,7 +32,7 @@ export const DEFAULT_PARAMS: ConvertParams = {
   strokewidth: 1,
   colorquantcycles: 3,
   threshold: 128,
-  pixelColors: 6,
+  pixelColors: 4,
   pixelBlockSize: 4,
 };
 
