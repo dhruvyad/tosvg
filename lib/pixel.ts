@@ -13,36 +13,52 @@ export function tracePixel(src: ImageData, opts: PixelOptions): string {
   const cols = Math.max(1, Math.floor(src.width / block));
   const rows = Math.max(1, Math.floor(src.height / block));
 
-  // Sample one pixel per block (the center).
-  const samples = new Uint32Array(cols * rows);
+  // Build a coarse palette from a stride sample of the full image, then
+  // assign every block's *majority-quantized color* to one palette index.
+  // Majority is more stable than center-pixel sampling at block boundaries.
+  const palette = buildPaletteFromImage(src, opts.colors);
+  const indexed = new Uint8Array(cols * rows);
   const sd = src.data;
+  const w = src.width;
+  const h = src.height;
+  // votes[c] reused per block — small fixed array, fast.
+  const votes = new Uint32Array(palette.length);
   for (let by = 0; by < rows; by++) {
-    const sy = Math.min(src.height - 1, Math.floor((by + 0.5) * block));
+    const y0 = by * block;
+    const y1 = Math.min(h, y0 + block);
     for (let bx = 0; bx < cols; bx++) {
-      const sx = Math.min(src.width - 1, Math.floor((bx + 0.5) * block));
-      const i = (sy * src.width + sx) * 4;
-      samples[by * cols + bx] = (sd[i] << 16) | (sd[i + 1] << 8) | sd[i + 2];
+      const x0 = bx * block;
+      const x1 = Math.min(w, x0 + block);
+      votes.fill(0);
+      for (let y = y0; y < y1; y++) {
+        let i = (y * w + x0) * 4;
+        for (let x = x0; x < x1; x++, i += 4) {
+          const c = (sd[i] << 16) | (sd[i + 1] << 8) | sd[i + 2];
+          votes[nearestIndex(c, palette)]++;
+        }
+      }
+      let best = 0;
+      let bestVotes = votes[0];
+      for (let k = 1; k < votes.length; k++) {
+        if (votes[k] > bestVotes) {
+          bestVotes = votes[k];
+          best = k;
+        }
+      }
+      indexed[by * cols + bx] = best;
     }
   }
 
-  // Quantize to opts.colors using popularity + nearest-color mapping.
-  const palette = buildPalette(samples, opts.colors);
-  const indexed = new Uint8Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    indexed[i] = nearestIndex(samples[i], palette);
-  }
-
-  // Per color, run greedy rectangle decomposition.
-  const w = src.width;
-  const h = src.height;
+  // Per color, run largest-rectangle-first decomposition. This produces
+  // far fewer (and visually simpler) rectangles than row-greedy.
   const parts: string[] = [];
   parts.push(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" shape-rendering="crispEdges">`,
   );
   for (let c = 0; c < palette.length; c++) {
-    const rects = greedyRects(indexed, cols, rows, c);
+    const rects = maxRectDecompose(indexed, cols, rows, c);
     if (!rects.length) continue;
-    const d = rectsToPathData(rects, block);
+    const d = rectsToPathData(rects, block, w, h);
     const fill = `#${palette[c].toString(16).padStart(6, '0')}`;
     parts.push(`<path fill="${fill}" d="${d}"/>`);
   }
@@ -131,31 +147,38 @@ function collectRuns(
   if (run > 0) out.push(run);
 }
 
-function buildPalette(samples: Uint32Array, target: number): number[] {
-  // Bucket by 4-bit-per-channel key for speed, then keep the top-N
-  // populous buckets by their average color.
-  const buckets = new Map<number, { sum: [number, number, number]; count: number; key: number }>();
-  for (let i = 0; i < samples.length; i++) {
-    const v = samples[i];
-    const r = (v >> 16) & 0xff;
-    const g = (v >> 8) & 0xff;
-    const b = v & 0xff;
-    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
-    const e = buckets.get(key);
-    if (e) {
-      e.sum[0] += r;
-      e.sum[1] += g;
-      e.sum[2] += b;
-      e.count++;
-    } else {
-      buckets.set(key, { sum: [r, g, b], count: 1, key });
+function buildPaletteFromImage(src: ImageData, target: number): number[] {
+  // Stride-sample the full image (every Nth pixel) and bucket by 4-bit-per-
+  // channel keys, then keep the top-N populous buckets by average color.
+  // Sampling the image (not just block centers) gives us a stable palette
+  // that tracks the actual color distribution, including thin strokes.
+  const buckets = new Map<number, { r: number; g: number; b: number; count: number }>();
+  const sd = src.data;
+  const total = src.width * src.height;
+  const stride = Math.max(1, Math.floor(Math.sqrt(total / 8000)));
+  for (let y = 0; y < src.height; y += stride) {
+    let i = y * src.width * 4;
+    for (let x = 0; x < src.width; x += stride, i += stride * 4) {
+      const r = sd[i];
+      const g = sd[i + 1];
+      const b = sd[i + 2];
+      const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+      const e = buckets.get(key);
+      if (e) {
+        e.r += r;
+        e.g += g;
+        e.b += b;
+        e.count++;
+      } else {
+        buckets.set(key, { r, g, b, count: 1 });
+      }
     }
   }
   const top = [...buckets.values()].sort((a, b) => b.count - a.count).slice(0, target);
   return top.map((e) => {
-    const r = Math.round(e.sum[0] / e.count);
-    const g = Math.round(e.sum[1] / e.count);
-    const b = Math.round(e.sum[2] / e.count);
+    const r = Math.round(e.r / e.count);
+    const g = Math.round(e.g / e.count);
+    const b = Math.round(e.b / e.count);
     return (r << 16) | (g << 8) | b;
   });
 }
@@ -187,65 +210,87 @@ interface Rect {
   h: number;
 }
 
-function greedyRects(
+function maxRectDecompose(
   indexed: Uint8Array,
   cols: number,
   rows: number,
   color: number,
 ): Rect[] {
-  // Per-row horizontal runs of `color`, then merge vertically when
-  // the run on the next row has the same x and width.
-  const used = new Uint8Array(indexed.length);
+  // Build a per-color mask, then repeatedly extract the largest all-1
+  // rectangle until empty. Using the standard histogram + monotonic-stack
+  // largest-rect-in-histogram algorithm. Produces dramatically fewer (and
+  // visually larger) rectangles than row-greedy decomposition for shapes
+  // dominated by big same-color regions.
+  const mask = new Uint8Array(cols * rows);
+  for (let i = 0; i < mask.length; i++) if (indexed[i] === color) mask[i] = 1;
+
   const out: Rect[] = [];
-  for (let y = 0; y < rows; y++) {
-    let x = 0;
-    while (x < cols) {
-      if (used[y * cols + x] || indexed[y * cols + x] !== color) {
-        x++;
-        continue;
+  const heights = new Uint32Array(cols);
+  // Tunable: stop emitting rects once the largest remaining is tiny — the
+  // residue is single cells that won't visibly change the result. For
+  // pixel-art fidelity we want them, but the user can scale block down.
+  while (true) {
+    heights.fill(0);
+    let bestArea = 0;
+    let best: Rect | null = null;
+
+    // Sweep: for each row, update column heights and find the largest
+    // rectangle in the histogram. Track the best across all rows.
+    const stack = new Int32Array(cols + 1);
+    const stackH = new Int32Array(cols + 1);
+    for (let y = 0; y < rows; y++) {
+      const rowOff = y * cols;
+      for (let x = 0; x < cols; x++) {
+        heights[x] = mask[rowOff + x] ? heights[x] + 1 : 0;
       }
-      let runLen = 0;
-      while (
-        x + runLen < cols &&
-        !used[y * cols + x + runLen] &&
-        indexed[y * cols + x + runLen] === color
-      ) {
-        runLen++;
-      }
-      // Try to grow downward: rows below must have an identical run [x, x+runLen).
-      let height = 1;
-      grow: while (y + height < rows) {
-        for (let k = 0; k < runLen; k++) {
-          const idx = (y + height) * cols + (x + k);
-          if (used[idx] || indexed[idx] !== color) break grow;
+      let sp = 0;
+      for (let x = 0; x <= cols; x++) {
+        const cur = x === cols ? 0 : heights[x];
+        let left = x;
+        while (sp > 0 && stackH[sp - 1] > cur) {
+          sp--;
+          const h = stackH[sp];
+          const l = stack[sp];
+          const area = h * (x - l);
+          if (area > bestArea) {
+            bestArea = area;
+            best = { x: l, y: y - h + 1, w: x - l, h };
+          }
+          left = l;
         }
-        // Also reject if we could grow further left/right at this row — those
-        // pixels will be picked up by their own run later.
-        height++;
-      }
-      for (let yy = 0; yy < height; yy++) {
-        for (let xx = 0; xx < runLen; xx++) {
-          used[(y + yy) * cols + (x + xx)] = 1;
+        if (sp === 0 || stackH[sp - 1] < cur) {
+          stack[sp] = left;
+          stackH[sp] = cur;
+          sp++;
         }
       }
-      out.push({ x, y, w: runLen, h: height });
-      x += runLen;
     }
+
+    if (!best || bestArea === 0) break;
+    // Punch out the rectangle and continue.
+    for (let yy = best.y; yy < best.y + best.h; yy++) {
+      const off = yy * cols;
+      for (let xx = best.x; xx < best.x + best.w; xx++) mask[off + xx] = 0;
+    }
+    out.push(best);
   }
   return out;
 }
 
-function rectsToPathData(rects: Rect[], block: number): string {
-  // Each rect: "M{x} {y}h{w}v{h}h-{w}". The closing 'z' is optional —
-  // SVG fills open subpaths, so we drop it to save ~1 byte per rect.
-  // We also chain multiple subpaths in a single d attribute by
-  // re-issuing M for each, which the parser handles fine.
+function rectsToPathData(rects: Rect[], block: number, srcW: number, srcH: number): string {
+  // Each rect: "M{x} {y}h{w}v{h}h-{w}". 'z' is optional (SVG fills open
+  // subpaths), so we drop it. Also clamp the right/bottom of edge rects
+  // to the source dimensions so the SVG covers the full viewBox even
+  // when block doesn't divide width/height evenly.
   const parts: string[] = [];
   for (const r of rects) {
     const x = r.x * block;
     const y = r.y * block;
-    const w = r.w * block;
-    const h = r.h * block;
+    const wEnd = Math.min((r.x + r.w) * block, srcW);
+    const hEnd = Math.min((r.y + r.h) * block, srcH);
+    const w = wEnd - x;
+    const h = hEnd - y;
+    if (w <= 0 || h <= 0) continue;
     parts.push(`M${x} ${y}h${w}v${h}h-${w}`);
   }
   return parts.join('');
