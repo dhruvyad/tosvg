@@ -32,8 +32,8 @@ export const DEFAULT_PARAMS: ConvertParams = {
   strokewidth: 1,
   colorquantcycles: 3,
   threshold: 128,
-  pixelColors: 4,
-  pixelBlockSize: 4,
+  pixelColors: 5,
+  pixelBlockSize: 2,
 };
 
 export interface ConvertRequest {
