@@ -166,39 +166,91 @@ function collectRuns(
 }
 
 function buildPaletteFromImage(src: ImageData, target: number): number[] {
-  // Stride-sample the full image (every Nth pixel) and bucket by 4-bit-per-
-  // channel keys, then keep the top-N populous buckets by average color.
-  // Sampling the image (not just block centers) gives us a stable palette
-  // that tracks the actual color distribution, including thin strokes.
-  const buckets = new Map<number, { r: number; g: number; b: number; count: number }>();
+  // K-means in RGB. Bucket popularity alone produces "transition" shades —
+  // dark grays sitting between a yellow and the black background — that
+  // get assigned to anti-aliased boundary cells and render as visible
+  // gaps. K-means pulls those samples into the closest dominant cluster
+  // instead, so the palette has well-separated colors and boundary cells
+  // collapse onto the right one.
   const sd = src.data;
-  const total = src.width * src.height;
+  const w = src.width;
+  const h = src.height;
+  const total = w * h;
   const stride = Math.max(1, Math.floor(Math.sqrt(total / 8000)));
-  for (let y = 0; y < src.height; y += stride) {
-    let i = y * src.width * 4;
-    for (let x = 0; x < src.width; x += stride, i += stride * 4) {
-      const r = sd[i];
-      const g = sd[i + 1];
-      const b = sd[i + 2];
-      const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
-      const e = buckets.get(key);
-      if (e) {
-        e.r += r;
-        e.g += g;
-        e.b += b;
-        e.count++;
-      } else {
-        buckets.set(key, { r, g, b, count: 1 });
-      }
+  const samples: number[] = []; // flat [r,g,b,...]
+  for (let y = 0; y < h; y += stride) {
+    let i = y * w * 4;
+    for (let x = 0; x < w; x += stride, i += stride * 4) {
+      samples.push(sd[i], sd[i + 1], sd[i + 2]);
     }
   }
-  const top = [...buckets.values()].sort((a, b) => b.count - a.count).slice(0, target);
-  return top.map((e) => {
-    const r = Math.round(e.r / e.count);
-    const g = Math.round(e.g / e.count);
-    const b = Math.round(e.b / e.count);
-    return (r << 16) | (g << 8) | b;
-  });
+  const n = samples.length / 3;
+
+  // Seed centers from the top color buckets — gives us a sensible
+  // starting point so k-means converges in a couple of iterations.
+  const buckets = new Map<number, [number, number, number, number]>();
+  for (let s = 0; s < samples.length; s += 3) {
+    const r = samples[s], g = samples[s + 1], b = samples[s + 2];
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const e = buckets.get(key);
+    if (e) {
+      e[0] += r; e[1] += g; e[2] += b; e[3]++;
+    } else {
+      buckets.set(key, [r, g, b, 1]);
+    }
+  }
+  const seeds = [...buckets.values()].sort((a, b) => b[3] - a[3]).slice(0, target);
+  const cR = new Float64Array(target);
+  const cG = new Float64Array(target);
+  const cB = new Float64Array(target);
+  for (let i = 0; i < seeds.length; i++) {
+    cR[i] = seeds[i][0] / seeds[i][3];
+    cG[i] = seeds[i][1] / seeds[i][3];
+    cB[i] = seeds[i][2] / seeds[i][3];
+  }
+  // If we got fewer seeds than target, pad with pure black to avoid NaNs.
+  for (let i = seeds.length; i < target; i++) {
+    cR[i] = 0; cG[i] = 0; cB[i] = 0;
+  }
+
+  const sumR = new Float64Array(target);
+  const sumG = new Float64Array(target);
+  const sumB = new Float64Array(target);
+  const cnt = new Uint32Array(target);
+  for (let iter = 0; iter < 10; iter++) {
+    sumR.fill(0); sumG.fill(0); sumB.fill(0); cnt.fill(0);
+    for (let s = 0; s < samples.length; s += 3) {
+      const r = samples[s], g = samples[s + 1], b = samples[s + 2];
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < target; i++) {
+        const dr = cR[i] - r, dg = cG[i] - g, db = cB[i] - b;
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bd) { bd = d; best = i; }
+      }
+      sumR[best] += r; sumG[best] += g; sumB[best] += b; cnt[best]++;
+    }
+    let moved = 0;
+    for (let i = 0; i < target; i++) {
+      if (cnt[i] === 0) continue;
+      const nr = sumR[i] / cnt[i];
+      const ng = sumG[i] / cnt[i];
+      const nb = sumB[i] / cnt[i];
+      moved += Math.abs(nr - cR[i]) + Math.abs(ng - cG[i]) + Math.abs(nb - cB[i]);
+      cR[i] = nr; cG[i] = ng; cB[i] = nb;
+    }
+    if (moved < 1) break;
+  }
+
+  // Drop any cluster that ended up empty.
+  const palette: number[] = [];
+  for (let i = 0; i < target; i++) {
+    if (cnt[i] === 0) continue;
+    const r = Math.round(cR[i]);
+    const g = Math.round(cG[i]);
+    const bb = Math.round(cB[i]);
+    palette.push((r << 16) | (g << 8) | bb);
+  }
+  return palette;
 }
 
 function nearestIndex(color: number, palette: number[]): number {
