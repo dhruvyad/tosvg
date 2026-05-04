@@ -51,58 +51,84 @@ export function tracePixel(src: ImageData, opts: PixelOptions): string {
 }
 
 function detectBlockSize(src: ImageData): number {
-  // Scan the middle row and middle column for color-change positions,
-  // then take the gcd of run lengths. Falls back to 1.
+  // Sample several horizontal + vertical scan lines and collect run lengths
+  // (pixels of the same color). The most common short run length is the
+  // pixel-art block size. GCD-based detection breaks on screenshots because
+  // anti-aliased single-pixel runs at color boundaries collapse it to 1.
   const w = src.width;
   const h = src.height;
   const d = src.data;
-  const rowY = Math.floor(h / 2);
-  const colX = Math.floor(w / 2);
   const runs: number[] = [];
+  const lines = [0.2, 0.35, 0.5, 0.65, 0.8];
+  for (const f of lines) collectRuns(d, w, h, Math.floor(h * f), true, runs);
+  for (const f of lines) collectRuns(d, w, h, Math.floor(w * f), false, runs);
 
-  let prev = -1;
-  let runLen = 0;
-  for (let x = 0; x < w; x++) {
-    const i = (rowY * w + x) * 4;
-    const c = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
-    if (c === prev) {
-      runLen++;
-    } else {
-      if (runLen > 0) runs.push(runLen);
-      prev = c;
-      runLen = 1;
-    }
+  // Cap at half the shorter side so a flat background run doesn't dominate.
+  const cap = Math.max(8, Math.floor(Math.min(w, h) / 2));
+  // Skip very short runs: those are almost always anti-alias artifacts on
+  // logos/screenshots, not the underlying pixel-art unit.
+  const minRun = 8;
+  const hist = new Map<number, number>();
+  for (const r of runs) {
+    if (r >= minRun && r <= cap) hist.set(r, (hist.get(r) ?? 0) + 1);
   }
-  if (runLen > 0) runs.push(runLen);
-
-  prev = -1;
-  runLen = 0;
-  for (let y = 0; y < h; y++) {
-    const i = (y * w + colX) * 4;
-    const c = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
-    if (c === prev) {
-      runLen++;
-    } else {
-      if (runLen > 0) runs.push(runLen);
-      prev = c;
-      runLen = 1;
-    }
+  if (hist.size === 0) {
+    // No clean blocks at all — image is truly continuous-tone. Use a
+    // conservative chunky block so output stays small.
+    return Math.max(2, Math.floor(Math.min(w, h) / 64));
   }
-  if (runLen > 0) runs.push(runLen);
 
-  // Filter out the long edges that are full-row background.
-  const filtered = runs.filter((r) => r > 1 && r < Math.min(w, h));
-  if (!filtered.length) return 1;
-  let g = filtered[0];
-  for (let i = 1; i < filtered.length; i++) g = gcd(g, filtered[i]);
-  return Math.max(1, g);
+  // Find peaks (local maxima). The smallest peak is the unit block.
+  const lens = [...hist.keys()].sort((a, b) => a - b);
+  let maxCount = 0;
+  for (const c of hist.values()) if (c > maxCount) maxCount = c;
+  const threshold = Math.max(3, Math.floor(maxCount / 4));
+  for (let i = 0; i < lens.length; i++) {
+    const len = lens[i];
+    const count = hist.get(len)!;
+    if (count < threshold) continue;
+    const leftCount = i > 0 ? (hist.get(lens[i - 1]) ?? 0) : 0;
+    const rightCount = i < lens.length - 1 ? (hist.get(lens[i + 1]) ?? 0) : 0;
+    if (count >= leftCount && count >= rightCount) return len;
+  }
+  // Fallback: smallest len above threshold.
+  for (const len of lens) {
+    if ((hist.get(len) ?? 0) >= threshold) return len;
+  }
+  return lens[0];
 }
 
-function gcd(a: number, b: number): number {
-  while (b) {
-    [a, b] = [b, a % b];
+function collectRuns(
+  d: Uint8ClampedArray,
+  w: number,
+  h: number,
+  fixed: number,
+  horizontal: boolean,
+  out: number[],
+): void {
+  const len = horizontal ? w : h;
+  let prev = -1;
+  let run = 0;
+  for (let i = 0; i < len; i++) {
+    const x = horizontal ? i : fixed;
+    const y = horizontal ? fixed : i;
+    if (x < 0 || x >= w || y < 0 || y >= h) continue;
+    const idx = (y * w + x) * 4;
+    // Quantize to 5 bits per channel so anti-aliasing noise doesn't
+    // chop a single visual block into many micro-runs.
+    const c =
+      ((d[idx] >> 3) << 10) |
+      ((d[idx + 1] >> 3) << 5) |
+      (d[idx + 2] >> 3);
+    if (c === prev) {
+      run++;
+    } else {
+      if (run > 0) out.push(run);
+      prev = c;
+      run = 1;
+    }
   }
-  return a;
+  if (run > 0) out.push(run);
 }
 
 function buildPalette(samples: Uint32Array, target: number): number[] {
