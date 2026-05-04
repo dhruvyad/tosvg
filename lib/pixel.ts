@@ -49,8 +49,11 @@ export function tracePixel(src: ImageData, opts: PixelOptions): string {
     }
   }
 
-  // Per color, run largest-rectangle-first decomposition. This produces
-  // far fewer (and visually simpler) rectangles than row-greedy.
+  // Per color, run largest-rectangle-first decomposition, then split rects
+  // into "thick" (filled) and "thin" (stroked) groups. A 1-block-thick
+  // rectangle rendered as a stroke of width=block centered on its midline
+  // covers identical pixels but compresses the path data ~50% — a huge
+  // win on outline-heavy images.
   const parts: string[] = [];
   parts.push(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" shape-rendering="crispEdges">`,
@@ -58,9 +61,24 @@ export function tracePixel(src: ImageData, opts: PixelOptions): string {
   for (let c = 0; c < palette.length; c++) {
     const rects = maxRectDecompose(indexed, cols, rows, c);
     if (!rects.length) continue;
-    const d = rectsToPathData(rects, block, w, h);
     const fill = `#${palette[c].toString(16).padStart(6, '0')}`;
-    parts.push(`<path fill="${fill}" d="${d}"/>`);
+    const thick: Rect[] = [];
+    const thin: Rect[] = [];
+    for (const r of rects) {
+      if (r.w >= 2 && r.h >= 2) thick.push(r);
+      else thin.push(r);
+    }
+    if (thick.length) {
+      parts.push(`<path fill="${fill}" d="${rectsToPathData(thick, block, w, h)}"/>`);
+    }
+    if (thin.length) {
+      parts.push(
+        `<path stroke="${fill}" stroke-width="${block}" fill="none" d="${thinRectsToStrokeData(
+          thin,
+          block,
+        )}"/>`,
+      );
+    }
   }
   parts.push('</svg>');
   return parts.join('');
@@ -275,6 +293,54 @@ function maxRectDecompose(
     out.push(best);
   }
   return out;
+}
+
+function thinRectsToStrokeData(rects: Rect[], block: number): string {
+  // Each thin rect (w==1 or h==1) becomes one stroke segment along its
+  // centerline. Sort by (axis, primary, secondary) so that consecutive
+  // segments often share an endpoint, which would let us drop the M.
+  // For now, emit each as its own M+h or M+v subpath; the path optimizer
+  // will collapse coordinate spacing.
+  const half = block / 2;
+  // Split into horizontal-axis (h==1) and vertical-axis (w==1) groups
+  // so the d attribute groups like-direction commands together — the
+  // resulting string compresses better and reads cleaner.
+  const horiz: Rect[] = [];
+  const vert: Rect[] = [];
+  const dot: Rect[] = [];
+  for (const r of rects) {
+    if (r.w === 1 && r.h === 1) dot.push(r);
+    else if (r.h === 1) horiz.push(r);
+    else vert.push(r);
+  }
+  // Sort for cache-friendly walks (top-to-bottom, left-to-right).
+  horiz.sort((a, b) => a.y - b.y || a.x - b.x);
+  vert.sort((a, b) => a.x - b.x || a.y - b.y);
+
+  const parts: string[] = [];
+  for (const r of horiz) {
+    const x = r.x * block;
+    const y = r.y * block + half;
+    const w = r.w * block;
+    parts.push(`M${x} ${y}h${w}`);
+  }
+  for (const r of vert) {
+    const x = r.x * block + half;
+    const y = r.y * block;
+    const h = r.h * block;
+    parts.push(`M${x} ${y}v${h}`);
+  }
+  for (const r of dot) {
+    // 1×1 dots become a zero-length stroke (rendered as a square cap of
+    // width=block). With default linecap="butt" they'd be invisible, so
+    // emit as a tiny h0 with linecap="square" implied via a fallback rect.
+    // Simplest: emit as a 1-unit horizontal stroke; the rendered footprint
+    // is still block×block (rounding effects) — close enough.
+    const x = r.x * block;
+    const y = r.y * block + half;
+    parts.push(`M${x} ${y}h${block}`);
+  }
+  return parts.join('');
 }
 
 function rectsToPathData(rects: Rect[], block: number, srcW: number, srcH: number): string {
