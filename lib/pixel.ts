@@ -236,14 +236,17 @@ function greedyRects(
 }
 
 function rectsToPathData(rects: Rect[], block: number): string {
-  // Concise path: each rect becomes "M{x} {y}h{w}v{h}h-{w}z".
+  // Each rect: "M{x} {y}h{w}v{h}h-{w}". The closing 'z' is optional —
+  // SVG fills open subpaths, so we drop it to save ~1 byte per rect.
+  // We also chain multiple subpaths in a single d attribute by
+  // re-issuing M for each, which the parser handles fine.
   const parts: string[] = [];
   for (const r of rects) {
     const x = r.x * block;
     const y = r.y * block;
     const w = r.w * block;
     const h = r.h * block;
-    parts.push(`M${x} ${y}h${w}v${h}h-${w}z`);
+    parts.push(`M${x} ${y}h${w}v${h}h-${w}`);
   }
   return parts.join('');
 }

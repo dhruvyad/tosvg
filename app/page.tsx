@@ -174,10 +174,18 @@ export default function Home() {
               </button>
             ))}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
-            {params.mode === 'pixel'
-              ? 'Pixel mode: emits merged rectangles per color. Use this for pixel art / sprites — output is tiny.'
-              : 'Trace mode: vectorizes shapes with Bezier paths. Better for photos and gradients.'}
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.5 }}>
+            {params.mode === 'pixel' ? (
+              <>
+                Pixel mode emits merged rectangles per color — best for logos, sprites, screenshots.
+                <br />
+                <strong style={{ color: 'var(--text)' }}>Block size</strong> controls fidelity vs file size.
+                Smaller block = more accurate, larger SVG. A detailed logo typically needs block 2–6;
+                clean pixel art works at 8+.
+              </>
+            ) : (
+              'Trace mode vectorizes shapes with Bezier paths. Better for photos and gradients, larger output.'
+            )}
           </div>
 
           <h2 style={{ marginTop: 20 }}>Parameters</h2>
