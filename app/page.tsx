@@ -162,7 +162,7 @@ export default function Home() {
 
           <h2 style={{ marginTop: 20 }}>Mode</h2>
           <div className="tabs" role="tablist">
-            {(['color', 'grayscale', 'bw'] as Mode[]).map((m) => (
+            {(['color', 'grayscale', 'bw', 'pixel'] as Mode[]).map((m) => (
               <button
                 key={m}
                 role="tab"
@@ -173,6 +173,11 @@ export default function Home() {
                 {m === 'bw' ? 'B&W' : m[0].toUpperCase() + m.slice(1)}
               </button>
             ))}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+            {params.mode === 'pixel'
+              ? 'Pixel mode: emits merged rectangles per color. Use this for pixel art / sprites — output is tiny.'
+              : 'Trace mode: vectorizes shapes with Bezier paths. Better for photos and gradients.'}
           </div>
 
           <h2 style={{ marginTop: 20 }}>Parameters</h2>
@@ -196,7 +201,30 @@ export default function Home() {
               hint="Smooth before tracing"
             />
 
-            {params.mode !== 'bw' && (
+            {params.mode === 'pixel' && (
+              <>
+                <Slider
+                  label="Colors"
+                  min={2}
+                  max={32}
+                  step={1}
+                  value={params.pixelColors}
+                  onChange={(v) => setParams((p) => ({ ...p, pixelColors: v }))}
+                  hint="Palette size after quantization"
+                />
+                <Slider
+                  label="Block size (0 = auto)"
+                  min={0}
+                  max={32}
+                  step={1}
+                  value={params.pixelBlockSize}
+                  onChange={(v) => setParams((p) => ({ ...p, pixelBlockSize: v }))}
+                  hint="Source pixel-block edge length"
+                />
+              </>
+            )}
+
+            {(params.mode === 'color' || params.mode === 'grayscale') && (
               <>
                 <Slider
                   label="Colors"
@@ -230,41 +258,54 @@ export default function Home() {
               />
             )}
 
-            <Slider
-              label="Min path size"
-              min={0}
-              max={32}
-              step={1}
-              value={params.pathomit}
-              onChange={(v) => setParams((p) => ({ ...p, pathomit: v }))}
-              hint="Drop tiny shapes (speckle filter)"
-            />
-            <Slider
-              label="Line tolerance"
-              min={0}
-              max={5}
-              step={0.1}
-              value={params.ltres}
-              onChange={(v) => setParams((p) => ({ ...p, ltres: v }))}
-              hint="Higher = simpler straight segments"
-            />
-            <Slider
-              label="Curve tolerance"
-              min={0}
-              max={5}
-              step={0.1}
-              value={params.qtres}
-              onChange={(v) => setParams((p) => ({ ...p, qtres: v }))}
-              hint="Higher = smoother curves"
-            />
-            <Slider
-              label="Stroke width"
-              min={0}
-              max={5}
-              step={0.25}
-              value={params.strokewidth}
-              onChange={(v) => setParams((p) => ({ ...p, strokewidth: v }))}
-            />
+            {params.mode !== 'pixel' && (
+              <>
+                <Slider
+                  label="Min path size"
+                  min={0}
+                  max={32}
+                  step={1}
+                  value={params.pathomit}
+                  onChange={(v) => setParams((p) => ({ ...p, pathomit: v }))}
+                  hint="Drop tiny shapes (speckle filter)"
+                />
+                <Slider
+                  label="Line tolerance"
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  value={params.ltres}
+                  onChange={(v) => setParams((p) => ({ ...p, ltres: v }))}
+                  hint="Higher = simpler straight segments"
+                />
+                <Slider
+                  label="Curve tolerance"
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  value={params.qtres}
+                  onChange={(v) => setParams((p) => ({ ...p, qtres: v }))}
+                  hint="Higher = smoother curves"
+                />
+                <Slider
+                  label="Stroke width"
+                  min={0}
+                  max={5}
+                  step={0.25}
+                  value={params.strokewidth}
+                  onChange={(v) => setParams((p) => ({ ...p, strokewidth: v }))}
+                />
+              </>
+            )}
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+              <input
+                type="checkbox"
+                checked={params.optimize}
+                onChange={(e) => setParams((p) => ({ ...p, optimize: e.target.checked }))}
+              />
+              Optimize output (round coords, hex colors, strip whitespace)
+            </label>
           </div>
 
           <div className="actions">

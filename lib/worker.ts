@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 import type { ConvertParams, ConvertRequest, ConvertResponse } from './types';
+import { tracePixel } from './pixel';
+import { optimizeSvg } from './optimize';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -7,7 +9,8 @@ self.addEventListener('message', async (e: MessageEvent<ConvertRequest>) => {
   const { id, imageData, params } = e.data;
   const start = performance.now();
   try {
-    const svg = await trace(imageData, params);
+    let svg = await trace(imageData, params);
+    if (params.optimize) svg = optimizeSvg(svg);
     const res: ConvertResponse = { id, ok: true, svg, durationMs: performance.now() - start };
     self.postMessage(res);
   } catch (err) {
@@ -22,6 +25,9 @@ self.addEventListener('message', async (e: MessageEvent<ConvertRequest>) => {
 });
 
 async function trace(imageData: ImageData, p: ConvertParams): Promise<string> {
+  if (p.mode === 'pixel') {
+    return tracePixel(imageData, { colors: p.pixelColors, blockSize: p.pixelBlockSize });
+  }
   const mod = (await import('imagetracerjs')) as unknown as {
     default?: { imagedataToSVG: (id: ImageData, opts: Record<string, unknown>) => string };
     imagedataToSVG?: (id: ImageData, opts: Record<string, unknown>) => string;

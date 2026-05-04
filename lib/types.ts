@@ -1,10 +1,11 @@
-export type Mode = 'color' | 'grayscale' | 'bw';
+export type Mode = 'color' | 'grayscale' | 'bw' | 'pixel';
 
 export interface ConvertParams {
   mode: Mode;
   // Shared
   scale: number;
   blur: number;
+  optimize: boolean;
   // Color / grayscale (imagetracerjs)
   numberofcolors: number;
   pathomit: number;
@@ -12,18 +13,18 @@ export interface ConvertParams {
   qtres: number;
   strokewidth: number;
   colorquantcycles: number;
-  // Black & white (potrace)
+  // Black & white
   threshold: number;
-  turdsize: number;
-  alphamax: number;
-  optcurve: boolean;
-  opttolerance: number;
+  // Pixel mode
+  pixelColors: number;
+  pixelBlockSize: number; // 0 = auto-detect
 }
 
 export const DEFAULT_PARAMS: ConvertParams = {
   mode: 'color',
   scale: 1,
   blur: 0,
+  optimize: true,
   numberofcolors: 16,
   pathomit: 8,
   ltres: 1,
@@ -31,10 +32,8 @@ export const DEFAULT_PARAMS: ConvertParams = {
   strokewidth: 1,
   colorquantcycles: 3,
   threshold: 128,
-  turdsize: 2,
-  alphamax: 1,
-  optcurve: true,
-  opttolerance: 0.2,
+  pixelColors: 8,
+  pixelBlockSize: 0,
 };
 
 export interface ConvertRequest {
